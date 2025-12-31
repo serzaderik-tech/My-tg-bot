@@ -7,7 +7,6 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 import socket
-import struct
 
 # Защита от двойного запуска
 LOCK_FILE = "bot.lock"
@@ -40,7 +39,10 @@ RCON_PASS = os.getenv('RCON_PASSWORD')
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.DEBUG,  # Изменил на DEBUG для детального логирования
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 DB_FILE = "users.json"
 
@@ -94,92 +96,89 @@ def get_control_kb():
     builder.adjust(2)
     return builder.as_markup()
 
-# Самописный RCON клиент (более надежный)
-class SimpleRCON:
-    SERVERDATA_AUTH = 3
-    SERVERDATA_AUTH_RESPONSE = 2
-    SERVERDATA_EXECCOMMAND = 2
-    SERVERDATA_RESPONSE_VALUE = 0
-    
+# RCON клиент для Minecraft Bedrock Edition (PE)
+class BedrockRCON:
     def __init__(self, host, port, password):
         self.host = host
         self.port = port
         self.password = password
         self.sock = None
-        self.req_id = 0
     
-    def _pack(self, msg_type, msg_body):
-        self.req_id += 1
-        msg_body_encoded = msg_body.encode('utf-8')
-        msg_size = len(msg_body_encoded) + 10
-        return struct.pack('<iii', msg_size, self.req_id, msg_type) + msg_body_encoded + b'\x00\x00'
-    
-    def _unpack(self, data):
-        if len(data) < 12:
-            return None, None, None
-        msg_size, req_id, msg_type = struct.unpack('<iii', data[:12])
-        msg_body = data[12:-2].decode('utf-8', errors='ignore')
-        return msg_size, req_id, msg_body
-    
-    def connect(self):
+    def connect_and_send(self, command):
         try:
+            logging.info(f"Подключение к Bedrock RCON: {self.host}:{self.port}")
+            
+            # Создаем новое соединение для каждой команды
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(10)
+            self.sock.settimeout(5)
             self.sock.connect((self.host, self.port))
+            logging.info("TCP соединение установлено")
             
-            # Аутентификация
-            auth_packet = self._pack(self.SERVERDATA_AUTH, self.password)
-            self.sock.send(auth_packet)
+            # В Bedrock Edition сначала отправляем пароль
+            password_packet = self.password.encode('utf-8') + b'\n'
+            self.sock.send(password_packet)
+            logging.info("Пароль отправлен")
             
-            # Читаем ответ аутентификации
-            response = self.sock.recv(4096)
-            _, resp_id, _ = self._unpack(response)
+            # Небольшая пауза для обработки
+            time.sleep(0.1)
             
-            if resp_id == -1:
-                return False
-            return True
+            # Отправляем команду
+            command_packet = command.encode('utf-8') + b'\n'
+            self.sock.send(command_packet)
+            logging.info(f"Команда отправлена: {command}")
+            
+            # Читаем ответ (Bedrock может отправлять несколько пакетов)
+            self.sock.settimeout(2)
+            response_parts = []
+            
+            try:
+                while True:
+                    chunk = self.sock.recv(4096)
+                    if not chunk:
+                        break
+                    response_parts.append(chunk.decode('utf-8', errors='ignore'))
+                    logging.debug(f"Получен фрагмент: {len(chunk)} байт")
+                    
+                    # Если данных мало, скорее всего это всё
+                    if len(chunk) < 4096:
+                        break
+            except socket.timeout:
+                # Это нормально для Bedrock - означает что данные закончились
+                pass
+            
+            result = ''.join(response_parts).strip()
+            logging.info(f"Финальный результат: {result[:200] if result else 'пусто'}")
+            
+            return result if result else ""
+            
+        except socket.timeout:
+            logging.error("Таймаут при подключении")
+            return "ERROR_TIMEOUT"
+        except ConnectionRefusedError:
+            logging.error("Соединение отклонено")
+            return "ERROR_CONN"
         except Exception as e:
-            logging.error(f"RCON connect error: {e}")
-            return False
-    
-    def send_command(self, command):
-        try:
-            if not self.sock:
-                if not self.connect():
-                    return "ERROR_AUTH"
-            
-            cmd_packet = self._pack(self.SERVERDATA_EXECCOMMAND, command)
-            self.sock.send(cmd_packet)
-            
-            # Читаем ответ
-            response = self.sock.recv(4096)
-            _, _, msg_body = self._unpack(response)
-            
-            return msg_body if msg_body else ""
-        except Exception as e:
-            logging.error(f"RCON command error: {e}")
+            logging.error(f"Bedrock RCON error: {e}")
             return f"ERROR: {str(e)}"
         finally:
-            self.close()
-    
-    def close(self):
-        if self.sock:
-            try:
-                self.sock.close()
-            except:
-                pass
-            self.sock = None
+            if self.sock:
+                try:
+                    self.sock.close()
+                    logging.debug("Соединение закрыто")
+                except:
+                    pass
+                self.sock = None
 
 def run_rcon(command):
     try:
-        rcon = SimpleRCON(RCON_IP, RCON_PORT, RCON_PASS)
-        result = rcon.send_command(command)
+        rcon = BedrockRCON(RCON_IP, RCON_PORT, RCON_PASS)
+        result = rcon.connect_and_send(command)
         
-        if result == "ERROR_AUTH":
-            logging.error("RCON: Authentication failed")
-            return "ERROR_AUTH"
+        if "ERROR_CONN" in result:
+            return "ERROR_CONN"
+        elif "ERROR_TIMEOUT" in result:
+            return "ERROR_TIMEOUT"
         elif "ERROR:" in result:
-            logging.error(f"RCON: {result}")
             return result
         
         return result if result else ""
