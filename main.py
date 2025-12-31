@@ -80,31 +80,69 @@ async def h_start(m: types.Message, state: FSMContext):
 @dp.message(States.wait_helper)
 async def h_done(m: types.Message, state: FSMContext):
     username = m.from_user.username if m.from_user.username else "без_username"
-    # ИСПРАВЛЕНИЕ: Убрал parse_mode или используем HTML/Markdown правильно
-    await bot.send_message(
-        ADMIN_ID, 
-        f"🆕 ХЕЛПЕР от @{username} (ID: {m.from_user.id}):\n\n{m.text}"
-    )
-    await m.answer("✅ Отправлено!", reply_markup=get_main_kb(m.from_user.id))
+    user_id = m.from_user.id
+    
+    # Отправляем заявку админу с указанием ID пользователя в тексте
+    msg_text = f"🆕 ЗАЯВКА НА ХЕЛПЕРА\n\n"
+    msg_text += f"От: @{username}\n"
+    msg_text += f"ID: {user_id}\n\n"
+    msg_text += f"Текст заявки:\n{m.text}\n\n"
+    msg_text += f"#user_{user_id}"  # Хештег для идентификации
+    
+    await bot.send_message(ADMIN_ID, msg_text)
+    await m.answer("✅ Заявка отправлена!", reply_markup=get_main_kb(m.from_user.id))
     await state.clear()
 
 @dp.message(F.text == "2. Заявка на ютубера")
 async def y_start(m: types.Message, state: FSMContext):
-    await m.answer("🎥 Ваша ссылка и ник:")
+    await m.answer("🎥 Укажите ссылку на канал и ник:")
     await state.set_state(States.wait_yt)
 
 @dp.message(States.wait_yt)
 async def y_done(m: types.Message, state: FSMContext):
     username = m.from_user.username if m.from_user.username else "без_username"
-    # ИСПРАВЛЕНИЕ: Убрал parse_mode
-    await bot.send_message(
-        ADMIN_ID, 
-        f"🆕 ЮТУБЕР от @{username} (ID: {m.from_user.id}):\n\n{m.text}"
-    )
-    await m.answer("✅ Отправлено!", reply_markup=get_main_kb(m.from_user.id))
+    user_id = m.from_user.id
+    
+    # Отправляем заявку админу с указанием ID пользователя в тексте
+    msg_text = f"🆕 ЗАЯВКА НА ЮТУБЕРА\n\n"
+    msg_text += f"От: @{username}\n"
+    msg_text += f"ID: {user_id}\n\n"
+    msg_text += f"Текст заявки:\n{m.text}\n\n"
+    msg_text += f"#user_{user_id}"  # Хештег для идентификации
+    
+    await bot.send_message(ADMIN_ID, msg_text)
+    await m.answer("✅ Заявка отправлена!", reply_markup=get_main_kb(m.from_user.id))
     await state.clear()
 
-# Правила и соц сети (добавлены заглушки)
+# ОБРАБОТЧИК ОТВЕТОВ АДМИНА НА ЗАЯВКИ
+@dp.message(F.reply_to_message, F.from_user.id == ADMIN_ID)
+async def admin_reply(m: types.Message):
+    # Проверяем что это ответ на сообщение от бота
+    if m.reply_to_message.from_user.id != bot.id:
+        return
+    
+    # Извлекаем ID пользователя из текста заявки
+    original_text = m.reply_to_message.text
+    
+    try:
+        # Ищем хештег с ID пользователя
+        if "#user_" in original_text:
+            user_id_str = original_text.split("#user_")[1].strip()
+            user_id = int(user_id_str)
+            
+            # Отправляем ответ пользователю
+            response_text = f"📬 Ответ администрации:\n\n{m.text}"
+            await bot.send_message(user_id, response_text)
+            
+            # Подтверждение админу
+            await m.reply("✅ Ответ отправлен пользователю!")
+        else:
+            await m.reply("❌ Не удалось определить ID пользователя")
+    except Exception as e:
+        await m.reply(f"❌ Ошибка отправки: {e}")
+        logging.error(f"Ошибка при ответе на заявку: {e}")
+
+# Правила и соц сети
 @dp.message(F.text == "3. Правила")
 async def rules(m: types.Message):
     await m.answer("📜 Правила сервера:\n1. Не читерить\n2. Уважать игроков\n3. Не спамить")
@@ -224,10 +262,9 @@ async def br_done(m: types.Message, state: FSMContext):
     
     for uid in db.keys():
         try:
-            # ИСПРАВЛЕНИЕ: Убрал ** из форматирования
             await bot.send_message(int(uid), f"📢 Объявление:\n\n{m.text}")
             success_count += 1
-            await asyncio.sleep(0.05)  # Чтобы избежать лимитов
+            await asyncio.sleep(0.05)
         except Exception as e:
             fail_count += 1
             logging.warning(f"Не удалось отправить {uid}: {e}")
