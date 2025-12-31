@@ -79,7 +79,12 @@ async def h_start(m: types.Message, state: FSMContext):
 
 @dp.message(States.wait_helper)
 async def h_done(m: types.Message, state: FSMContext):
-    await bot.send_message(ADMIN_ID, f"🆕 **ХЕЛПЕР** от @{m.from_user.username}:\n{m.text}")
+    username = m.from_user.username if m.from_user.username else "без_username"
+    # ИСПРАВЛЕНИЕ: Убрал parse_mode или используем HTML/Markdown правильно
+    await bot.send_message(
+        ADMIN_ID, 
+        f"🆕 ХЕЛПЕР от @{username} (ID: {m.from_user.id}):\n\n{m.text}"
+    )
     await m.answer("✅ Отправлено!", reply_markup=get_main_kb(m.from_user.id))
     await state.clear()
 
@@ -90,9 +95,23 @@ async def y_start(m: types.Message, state: FSMContext):
 
 @dp.message(States.wait_yt)
 async def y_done(m: types.Message, state: FSMContext):
-    await bot.send_message(ADMIN_ID, f"🆕 **ЮТУБЕР** от @{m.from_user.username}:\n{m.text}")
+    username = m.from_user.username if m.from_user.username else "без_username"
+    # ИСПРАВЛЕНИЕ: Убрал parse_mode
+    await bot.send_message(
+        ADMIN_ID, 
+        f"🆕 ЮТУБЕР от @{username} (ID: {m.from_user.id}):\n\n{m.text}"
+    )
     await m.answer("✅ Отправлено!", reply_markup=get_main_kb(m.from_user.id))
     await state.clear()
+
+# Правила и соц сети (добавлены заглушки)
+@dp.message(F.text == "3. Правила")
+async def rules(m: types.Message):
+    await m.answer("📜 Правила сервера:\n1. Не читерить\n2. Уважать игроков\n3. Не спамить")
+
+@dp.message(F.text == "4. Соц сети")
+async def socials(m: types.Message):
+    await m.answer("📱 Наши соц. сети:\nYouTube: ...\nDiscord: ...")
 
 # Привязка
 @dp.message(F.text == "5. Привязка")
@@ -111,7 +130,6 @@ async def bind_nick(m: types.Message, state: FSMContext):
     nick_input = m.text.strip()
     db = load_db()
     
-    # ПРОВЕРКА: не привязан ли этот ник уже КЕМ-ТО ДРУГИМ
     for user_id, info in db.items():
         if info.get("nick", "").lower() == nick_input.lower():
             await m.answer("❌ Этот аккаунт уже привязан к другому Telegram!")
@@ -130,7 +148,6 @@ async def bind_pass(m: types.Message, state: FSMContext):
 
     if "AUTH_SUCCESS" in res:
         db = load_db()
-        # Проверяем, выдавали ли уже кейс на этот ник когда-либо
         case_already = any(i.get("nick") == nick and i.get("case_received") for i in db.values())
         
         db[str(m.from_user.id)] = {"nick": nick, "case_received": case_already}
@@ -161,7 +178,8 @@ async def kick_c(c: types.CallbackQuery):
             await c.answer("❌ Вас нет на сервере!", show_alert=True)
         else:
             await c.answer("✅ Кикнут!", show_alert=True)
-    await c.answer()
+    else:
+        await c.answer("❌ Аккаунт не привязан!", show_alert=True)
 
 @dp.callback_query(F.data == "change_pass")
 async def ch_pass_c(c: types.CallbackQuery, state: FSMContext):
@@ -175,7 +193,7 @@ async def proc_new_p(m: types.Message, state: FSMContext):
     nick = db.get(str(m.from_user.id), {}).get("nick")
     if nick:
         run_rcon(f"setpass {nick} {m.text}")
-        await m.answer(f"✅ Пароль для `{nick}` изменен!")
+        await m.answer(f"✅ Пароль для `{nick}` изменен!", parse_mode="Markdown")
     await state.clear()
 
 @dp.callback_query(F.data == "unlink")
@@ -196,14 +214,30 @@ async def br_start(m: types.Message, state: FSMContext):
 
 @dp.message(States.wait_broadcast)
 async def br_done(m: types.Message, state: FSMContext):
+    if m.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+    
     db = load_db()
+    success_count = 0
+    fail_count = 0
+    
     for uid in db.keys():
-        try: await bot.send_message(int(uid), f"📢 **Объявление:**\n\n{m.text}")
-        except: pass
-    await m.answer("✅ Готово!")
+        try:
+            # ИСПРАВЛЕНИЕ: Убрал ** из форматирования
+            await bot.send_message(int(uid), f"📢 Объявление:\n\n{m.text}")
+            success_count += 1
+            await asyncio.sleep(0.05)  # Чтобы избежать лимитов
+        except Exception as e:
+            fail_count += 1
+            logging.warning(f"Не удалось отправить {uid}: {e}")
+    
+    await m.answer(f"✅ Рассылка завершена!\n✅ Отправлено: {success_count}\n❌ Не удалось: {fail_count}")
     await state.clear()
 
-async def handle(request): return web.Response(text="OK")
+async def handle(request): 
+    return web.Response(text="OK")
+
 async def main():
     app = web.Application()
     app.router.add_get("/", handle)
