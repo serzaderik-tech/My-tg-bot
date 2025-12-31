@@ -51,6 +51,16 @@ def get_main_kb(user_id):
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
+def get_cancel_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="❌ Отменить")
+    return builder.as_markup(resize_keyboard=True)
+
+def get_back_kb():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="🔙 Вернуться")
+    return builder.as_markup(resize_keyboard=True)
+
 def get_control_kb():
     builder = InlineKeyboardBuilder()
     builder.button(text="👞 Кикнуть себя", callback_data="kick_me")
@@ -74,11 +84,16 @@ async def cmd_start(m: types.Message):
 # Заявки
 @dp.message(F.text == "1. Заявка на хелпера")
 async def h_start(m: types.Message, state: FSMContext):
-    await m.answer("✍️ Напишите вашу заявку:")
+    await m.answer("✍️ Напишите вашу заявку:", reply_markup=get_cancel_kb())
     await state.set_state(States.wait_helper)
 
 @dp.message(States.wait_helper)
 async def h_done(m: types.Message, state: FSMContext):
+    if m.text == "❌ Отменить":
+        await m.answer("❌ Отменено", reply_markup=get_main_kb(m.from_user.id))
+        await state.clear()
+        return
+    
     username = m.from_user.username if m.from_user.username else "без_username"
     user_id = m.from_user.id
     
@@ -95,11 +110,16 @@ async def h_done(m: types.Message, state: FSMContext):
 
 @dp.message(F.text == "2. Заявка на ютубера")
 async def y_start(m: types.Message, state: FSMContext):
-    await m.answer("🎥 Укажите ссылку на канал и ник:")
+    await m.answer("🎥 Укажите ссылку на канал и ник:", reply_markup=get_cancel_kb())
     await state.set_state(States.wait_yt)
 
 @dp.message(States.wait_yt)
 async def y_done(m: types.Message, state: FSMContext):
+    if m.text == "❌ Отменить":
+        await m.answer("❌ Отменено", reply_markup=get_main_kb(m.from_user.id))
+        await state.clear()
+        return
+    
     username = m.from_user.username if m.from_user.username else "без_username"
     user_id = m.from_user.id
     
@@ -145,11 +165,16 @@ async def admin_reply(m: types.Message):
 # Правила и соц сети
 @dp.message(F.text == "3. Правила")
 async def rules(m: types.Message):
-    await m.answer("📜 Правила сервера:\n1. Не читерить\n2. Уважать игроков\n3. Не спамить")
+    await m.answer("📜 Правила сервера:\n1. Не читерить\n2. Уважать игроков\n3. Не спамить", reply_markup=get_back_kb())
 
 @dp.message(F.text == "4. Соц сети")
 async def socials(m: types.Message):
-    await m.answer("📱 Наши соц. сети:\nYouTube: ...\nDiscord: ...")
+    await m.answer("📱 Наши соц. сети:\nYouTube: ...\nDiscord: ...", reply_markup=get_back_kb())
+
+@dp.message(F.text == "🔙 Вернуться")
+async def go_back(m: types.Message, state: FSMContext):
+    await state.clear()
+    await m.answer("Главное меню:", reply_markup=get_main_kb(m.from_user.id))
 
 # Привязка
 @dp.message(F.text == "5. Привязка")
@@ -160,11 +185,16 @@ async def bind_start(m: types.Message, state: FSMContext):
         nick = db[uid].get("nick")
         await m.answer(f"⚙️ Ваш аккаунт: `{nick}`", reply_markup=get_control_kb(), parse_mode="Markdown")
         return
-    await m.answer("👤 Введите ваш ник на сервере:")
+    await m.answer("👤 Введите ваш ник на сервере:", reply_markup=get_back_kb())
     await state.set_state(States.wait_nick)
 
 @dp.message(States.wait_nick)
 async def bind_nick(m: types.Message, state: FSMContext):
+    if m.text == "🔙 Вернуться":
+        await m.answer("Главное меню:", reply_markup=get_main_kb(m.from_user.id))
+        await state.clear()
+        return
+    
     nick_input = m.text.strip()
     db = load_db()
     
@@ -180,6 +210,11 @@ async def bind_nick(m: types.Message, state: FSMContext):
 
 @dp.message(States.wait_pass)
 async def bind_pass(m: types.Message, state: FSMContext):
+    if m.text == "🔙 Вернуться":
+        await m.answer("Главное меню:", reply_markup=get_main_kb(m.from_user.id))
+        await state.clear()
+        return
+    
     data = await state.get_data()
     nick = data['nick']
     res = run_rcon(f"checkpass {nick} {m.text}")
@@ -194,15 +229,15 @@ async def bind_pass(m: types.Message, state: FSMContext):
             run_rcon(f"dc give {nick} 1")
             run_rcon(f"tgmsg {nick} SUCCESS_CASE")
             db[str(m.from_user.id)]["case_received"] = True
-            await m.answer(f"✅ Успешно! Аккаунт `{nick}` привязан. Вам выдан кейс!", parse_mode="Markdown")
+            await m.answer(f"✅ Успешно! Аккаунт `{nick}` привязан. Вам выдан кейс!", parse_mode="Markdown", reply_markup=get_main_kb(m.from_user.id))
         else:
             run_rcon(f"tgmsg {nick} SUCCESS_NO_CASE")
-            await m.answer(f"✅ Успешно! Аккаунт `{nick}` привязан. (Кейс уже выдавался)", parse_mode="Markdown")
+            await m.answer(f"✅ Успешно! Аккаунт `{nick}` привязан. (Кейс уже выдавался)", parse_mode="Markdown", reply_markup=get_main_kb(m.from_user.id))
         
         save_db(db)
         await state.clear()
     else:
-        await m.answer("❌ Неверный пароль!")
+        await m.answer("❌ Неверный пароль!", reply_markup=get_main_kb(m.from_user.id))
         await state.clear()
 
 # Кнопки управления
@@ -247,12 +282,17 @@ async def unl_c(c: types.CallbackQuery):
 @dp.message(F.text == "📢 Сообщение")
 async def br_start(m: types.Message, state: FSMContext):
     if m.from_user.id == ADMIN_ID:
-        await m.answer("Введите текст рассылки:")
+        await m.answer("Введите текст рассылки:", reply_markup=get_cancel_kb())
         await state.set_state(States.wait_broadcast)
 
 @dp.message(States.wait_broadcast)
 async def br_done(m: types.Message, state: FSMContext):
     if m.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+    
+    if m.text == "❌ Отменить":
+        await m.answer("❌ Отменено", reply_markup=get_main_kb(m.from_user.id))
         await state.clear()
         return
     
@@ -269,7 +309,7 @@ async def br_done(m: types.Message, state: FSMContext):
             fail_count += 1
             logging.warning(f"Не удалось отправить {uid}: {e}")
     
-    await m.answer(f"✅ Рассылка завершена!\n✅ Отправлено: {success_count}\n❌ Не удалось: {fail_count}")
+    await m.answer(f"✅ Рассылка завершена!\n✅ Отправлено: {success_count}\n❌ Не удалось: {fail_count}", reply_markup=get_main_kb(m.from_user.id))
     await state.clear()
 
 async def handle(request): 
