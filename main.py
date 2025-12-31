@@ -73,15 +73,50 @@ def get_control_kb():
 
 def run_rcon(command):
     try:
-        with MCRcon(RCON_IP, RCON_PASS, port=RCON_PORT) as mcr:
-            return mcr.command(command).strip()
-    except: return "ERROR_CONN"
+        with MCRcon(RCON_IP, RCON_PASS, port=RCON_PORT, timeout=10) as mcr:
+            response = mcr.command(command)
+            if response is None:
+                return ""
+            return response.strip()
+    except ConnectionRefusedError:
+        logging.error("RCON: Connection refused")
+        return "ERROR_CONN"
+    except TimeoutError:
+        logging.error("RCON: Timeout")
+        return "ERROR_TIMEOUT"
+    except Exception as e:
+        logging.error(f"RCON Error: {e}")
+        return f"ERROR: {str(e)}"
 
 # --- ОБРАБОТЧИКИ ---
 
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message):
     await m.answer("👋 Добро пожаловать!", reply_markup=get_main_kb(m.from_user.id))
+
+# Команда для теста RCON (только админ)
+@dp.message(Command("testrcon"))
+async def test_rcon(m: types.Message):
+    if m.from_user.id != ADMIN_ID:
+        return
+    
+    await m.answer("🔄 Тестирую RCON...")
+    
+    # Тест 1: Простая команда
+    result1 = run_rcon("list")
+    await m.answer(f"Тест 1 (list): {result1}")
+    
+    # Тест 2: Say команда
+    result2 = run_rcon("say Тест из Telegram")
+    await m.answer(f"Тест 2 (say): {result2}")
+    
+    # Показываем настройки
+    await m.answer(
+        f"RCON настройки:\n"
+        f"IP: {RCON_IP}\n"
+        f"Port: {RCON_PORT}\n"
+        f"Pass: {'установлен' if RCON_PASS else 'НЕ установлен'}"
+    )
 
 # Заявки
 @dp.message(F.text == "1. Заявка на хелпера")
@@ -167,16 +202,11 @@ async def admin_reply(m: types.Message):
 # Правила и соц сети
 @dp.message(F.text == "3. Правила")
 async def rules(m: types.Message):
-    await m.answer("📜 Правила сервера:\n1. Не читерить\n2. Уважать игроков\n3. Не спамить", reply_markup=get_back_kb())
+    await m.answer("📜 Правила сервера:\n1. Не читерить\n2. Уважать игроков\n3. Не спамить")
 
 @dp.message(F.text == "4. Соц сети")
 async def socials(m: types.Message):
-    await m.answer("📱 Наши соц. сети:\nYouTube: ...\nDiscord: ...", reply_markup=get_back_kb())
-
-@dp.message(F.text == "🔙 Вернуться")
-async def go_back(m: types.Message, state: FSMContext):
-    await state.clear()
-    await m.answer("Главное меню:", reply_markup=get_main_kb(m.from_user.id))
+    await m.answer("📱 Наши соц. сети:\nYouTube: ...\nDiscord: ...")
 
 # Привязка
 @dp.message(F.text == "5. Привязка")
@@ -187,16 +217,11 @@ async def bind_start(m: types.Message, state: FSMContext):
         nick = db[uid].get("nick")
         await m.answer(f"⚙️ Ваш аккаунт: `{nick}`", reply_markup=get_control_kb(), parse_mode="Markdown")
         return
-    await m.answer("👤 Введите ваш ник на сервере:", reply_markup=get_back_kb())
+    await m.answer("👤 Введите ваш ник на сервере:")
     await state.set_state(States.wait_nick)
 
 @dp.message(States.wait_nick)
 async def bind_nick(m: types.Message, state: FSMContext):
-    if m.text == "🔙 Вернуться":
-        await m.answer("Главное меню:", reply_markup=get_main_kb(m.from_user.id))
-        await state.clear()
-        return
-    
     nick_input = m.text.strip()
     db = load_db()
     
@@ -212,11 +237,6 @@ async def bind_nick(m: types.Message, state: FSMContext):
 
 @dp.message(States.wait_pass)
 async def bind_pass(m: types.Message, state: FSMContext):
-    if m.text == "🔙 Вернуться":
-        await m.answer("Главное меню:", reply_markup=get_main_kb(m.from_user.id))
-        await state.clear()
-        return
-    
     data = await state.get_data()
     nick = data['nick']
     res = run_rcon(f"checkpass {nick} {m.text}")
@@ -231,15 +251,15 @@ async def bind_pass(m: types.Message, state: FSMContext):
             run_rcon(f"dc give {nick} 1")
             run_rcon(f"tgmsg {nick} SUCCESS_CASE")
             db[str(m.from_user.id)]["case_received"] = True
-            await m.answer(f"✅ Успешно! Аккаунт `{nick}` привязан. Вам выдан кейс!", parse_mode="Markdown", reply_markup=get_main_kb(m.from_user.id))
+            await m.answer(f"✅ Успешно! Аккаунт `{nick}` привязан. Вам выдан кейс!", parse_mode="Markdown")
         else:
             run_rcon(f"tgmsg {nick} SUCCESS_NO_CASE")
-            await m.answer(f"✅ Успешно! Аккаунт `{nick}` привязан. (Кейс уже выдавался)", parse_mode="Markdown", reply_markup=get_main_kb(m.from_user.id))
+            await m.answer(f"✅ Успешно! Аккаунт `{nick}` привязан. (Кейс уже выдавался)", parse_mode="Markdown")
         
         save_db(db)
         await state.clear()
     else:
-        await m.answer("❌ Неверный пароль!", reply_markup=get_main_kb(m.from_user.id))
+        await m.answer("❌ Неверный пароль!")
         await state.clear()
 
 # Кнопки управления
@@ -284,17 +304,12 @@ async def unl_c(c: types.CallbackQuery):
 @dp.message(F.text == "📢 Сообщение")
 async def br_start(m: types.Message, state: FSMContext):
     if m.from_user.id == ADMIN_ID:
-        await m.answer("Введите текст рассылки:", reply_markup=get_cancel_kb())
+        await m.answer("Введите текст рассылки:")
         await state.set_state(States.wait_broadcast)
 
 @dp.message(States.wait_broadcast)
 async def br_done(m: types.Message, state: FSMContext):
     if m.from_user.id != ADMIN_ID:
-        await state.clear()
-        return
-    
-    if m.text == "❌ Отменить":
-        await m.answer("❌ Отменено", reply_markup=get_main_kb(m.from_user.id))
         await state.clear()
         return
     
@@ -311,67 +326,8 @@ async def br_done(m: types.Message, state: FSMContext):
             fail_count += 1
             logging.warning(f"Не удалось отправить {uid}: {e}")
     
-    await m.answer(f"✅ Рассылка завершена!\n✅ Отправлено: {success_count}\n❌ Не удалось: {fail_count}", reply_markup=get_main_kb(m.from_user.id))
+    await m.answer(f"✅ Рассылка завершена!\n✅ Отправлено: {success_count}\n❌ Не удалось: {fail_count}")
     await state.clear()
-
-# Консоль (только для админа)
-@dp.message(F.text == "⚙️ Консоль")
-async def console_start(m: types.Message, state: FSMContext):
-    if m.from_user.id != ADMIN_ID:
-        return
-    
-    await m.answer(
-        "⚙️ Режим консоли активирован\n\n"
-        "Отправьте команду для выполнения на сервере.\n"
-        "Например: list, say Привет, whitelist add player\n\n"
-        "Для выхода нажмите 'Вернуться'",
-        reply_markup=get_back_kb()
-    )
-    await state.set_state(States.wait_console)
-    logging.info(f"Админ {m.from_user.id} вошел в режим консоли")
-
-@dp.message(States.wait_console)
-async def console_command(m: types.Message, state: FSMContext):
-    if m.from_user.id != ADMIN_ID:
-        await state.clear()
-        return
-    
-    if m.text == "🔙 Вернуться":
-        await m.answer("❌ Консоль закрыта", reply_markup=get_main_kb(m.from_user.id))
-        await state.clear()
-        logging.info(f"Админ {m.from_user.id} вышел из консоли")
-        return
-    
-    # Выполняем команду через RCON
-    command = m.text.strip()
-    logging.info(f"Выполняется команда: {command}")
-    
-    try:
-        result = run_rcon(command)
-        logging.info(f"Результат команды: {result[:100] if result else 'пусто'}")
-        
-        if result == "ERROR_CONN":
-            await m.answer("❌ Ошибка подключения к серверу", reply_markup=get_back_kb())
-        elif result == "" or not result:
-            await m.answer(
-                f"✅ Команда выполнена: `{command}`\n\n(Без вывода)", 
-                parse_mode="Markdown",
-                reply_markup=get_back_kb()
-            )
-        else:
-            # Ограничиваем длину ответа
-            if len(result) > 3500:
-                result = result[:3500] + "\n\n... (обрезано)"
-            
-            await m.answer(
-                f"✅ Команда: `{command}`\n\n📄 Результат:\n```\n{result}\n```", 
-                parse_mode="Markdown",
-                reply_markup=get_back_kb()
-            )
-    
-    except Exception as e:
-        logging.error(f"Ошибка выполнения команды: {e}")
-        await m.answer(f"❌ Ошибка выполнения: {e}", reply_markup=get_back_kb())
 
 async def handle(request): 
     return web.Response(text="OK")
