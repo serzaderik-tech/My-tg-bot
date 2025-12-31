@@ -1,4 +1,4 @@
-import asyncio, logging, time, os, json, sys
+import asyncio, logging, time, os, json, sys, re
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -40,7 +40,7 @@ RCON_PASS = os.getenv('RCON_PASSWORD')
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 logging.basicConfig(
-    level=logging.DEBUG,  # Изменил на DEBUG для детального логирования
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
@@ -110,44 +110,52 @@ class BedrockRCON:
             
             # Создаем новое соединение для каждой команды
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(5)
+            self.sock.settimeout(10)  # Увеличиваем таймаут
+            
+            # Пробуем подключиться
             self.sock.connect((self.host, self.port))
             logging.info("TCP соединение установлено")
             
-            # В Bedrock Edition сначала отправляем пароль
-            password_packet = self.password.encode('utf-8') + b'\n'
+            # Для Bedrock сначала читаем приветствие (если есть)
+            time.sleep(0.1)
+            
+            # Отправляем пароль
+            password_packet = self.password.encode('utf-8') + b'\x00'
             self.sock.send(password_packet)
             logging.info("Пароль отправлен")
             
-            # Небольшая пауза для обработки
+            # Ждем ответа на пароль
             time.sleep(0.1)
             
-            # Отправляем команду
-            command_packet = command.encode('utf-8') + b'\n'
+            # Отправляем команду с нулевым байтом в конце
+            command_packet = command.encode('utf-8') + b'\x00'
             self.sock.send(command_packet)
             logging.info(f"Команда отправлена: {command}")
             
-            # Читаем ответ (Bedrock может отправлять несколько пакетов)
-            self.sock.settimeout(2)
-            response_parts = []
+            # Читаем ответ
+            self.sock.settimeout(5)
+            response = b""
             
             try:
                 while True:
                     chunk = self.sock.recv(4096)
                     if not chunk:
                         break
-                    response_parts.append(chunk.decode('utf-8', errors='ignore'))
-                    logging.debug(f"Получен фрагмент: {len(chunk)} байт")
-                    
-                    # Если данных мало, скорее всего это всё
+                    response += chunk
+                    # В Bedrock ответ обычно приходит одним пакетом
                     if len(chunk) < 4096:
                         break
             except socket.timeout:
-                # Это нормально для Bedrock - означает что данные закончились
+                # Таймаут - возможно ответ закончился
                 pass
             
-            result = ''.join(response_parts).strip()
-            logging.info(f"Финальный результат: {result[:200] if result else 'пусто'}")
+            # Преобразуем в строку, удаляя нулевые байты
+            result = response.decode('utf-8', errors='ignore').replace('\x00', '').strip()
+            
+            # Очищаем от возможных ANSI кодов
+            result = re.sub(r'\x1b\[[0-9;]*[mK]', '', result)
+            
+            logging.info(f"Результат ({len(result)} символов): {result[:200]}")
             
             return result if result else ""
             
@@ -158,7 +166,7 @@ class BedrockRCON:
             logging.error("Соединение отклонено")
             return "ERROR_CONN"
         except Exception as e:
-            logging.error(f"Bedrock RCON error: {e}")
+            logging.error(f"Bedrock RCON error: {str(e)}")
             return f"ERROR: {str(e)}"
         finally:
             if self.sock:
@@ -215,6 +223,27 @@ async def test_rcon(m: types.Message):
         f"Port: {RCON_PORT}\n"
         f"Pass: {'установлен' if RCON_PASS else 'НЕ установлен'}"
     )
+
+# Команда для проверки RCON (только админ)
+@dp.message(Command("checkrcon"))
+async def check_rcon(m: types.Message):
+    if m.from_user.id != ADMIN_ID:
+        return
+    
+    await m.answer("🔍 Проверяю RCON подключение...")
+    
+    # Простая тестовая команда
+    test_commands = [
+        "list",  # Список игроков
+        "help",  # Помощь
+        "time query daytime",  # Проверка времени
+    ]
+    
+    for cmd in test_commands:
+        result = run_rcon(cmd)
+        status = "✅" if "ERROR" not in result else "❌"
+        await m.answer(f"{status} `{cmd}`:\n```\n{result[:500]}\n```", parse_mode="Markdown")
+        await asyncio.sleep(1)
 
 # Заявки
 @dp.message(F.text == "1. Заявка на хелпера")
@@ -427,6 +456,60 @@ async def br_done(m: types.Message, state: FSMContext):
     await m.answer(f"✅ Рассылка завершена!\n✅ Отправлено: {success_count}\n❌ Не удалось: {fail_count}")
     await state.clear()
 
+# Консоль
+@dp.message(F.text == "⚙️ Консоль")
+async def console_start(m: types.Message, state: FSMContext):
+    if m.from_user.id != ADMIN_ID:
+        return
+    
+    # Скрываем все кнопки - отправляем сообщение с кнопкой "Вернуться"
+    await m.answer(
+        "⚙️ Режим консоли\n"
+        "Отправьте команду для выполнения на сервере\n"
+        "Для выхода нажмите кнопку ниже",
+        reply_markup=get_back_kb()  # Только кнопка "Вернуться"
+    )
+    await state.set_state(States.wait_console)
+
+@dp.message(States.wait_console)
+async def console_command(m: types.Message, state: FSMContext):
+    if m.from_user.id != ADMIN_ID:
+        await state.clear()
+        return
+    
+    # Если нажата кнопка "Вернуться"
+    if m.text == "🔙 Вернуться":
+        await m.answer("✅ Выход из режима консоли", reply_markup=get_main_kb(m.from_user.id))
+        await state.clear()
+        return
+    
+    # Отправляем команду на сервер
+    await m.answer(f"🔄 Выполняю: `{m.text}`", parse_mode="Markdown")
+    
+    result = run_rcon(m.text)
+    
+    # Форматируем ответ
+    if not result:
+        result = "✅ Команда выполнена (пустой ответ)"
+    elif "ERROR_CONN" in result:
+        result = "❌ Ошибка подключения к RCON"
+    elif "ERROR_TIMEOUT" in result:
+        result = "⏱️ Таймаут подключения"
+    elif "ERROR:" in result:
+        result = f"❌ Ошибка: {result}"
+    
+    # Обрезаем слишком длинные ответы
+    if len(result) > 4000:
+        result = result[:4000] + "\n\n... (сообщение обрезано)"
+    
+    await m.answer(f"📋 Результат:\n```\n{result}\n```", parse_mode="Markdown")
+
+# Команда /console для удобства
+@dp.message(Command("console"))
+async def cmd_console(m: types.Message, state: FSMContext):
+    await console_start(m, state)
+
+# Веб-сервер для хостингов (Heroku, Railway и т.д.)
 async def handle(request): 
     return web.Response(text="OK")
 
@@ -438,6 +521,7 @@ async def main():
     except Exception as e:
         logging.error(f"Ошибка при удалении webhook: {e}")
     
+    # Запускаем веб-сервер для хостингов
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
@@ -448,4 +532,9 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Бот остановлен пользователем")
+    finally:
+        remove_lock()
