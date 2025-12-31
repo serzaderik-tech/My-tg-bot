@@ -37,10 +37,18 @@ RCON_IP = "188.127.241.8"
 RCON_PORT = 55664 
 RCON_PASS = os.getenv('RCON_PASSWORD')
 
+# Проверяем наличие обязательных переменных
+if not API_TOKEN:
+    print("❌ ОШИБКА: Не установлен BOT_TOKEN")
+    sys.exit(1)
+
+if not RCON_PASS:
+    print("⚠️  ВНИМАНИЕ: Не установлен RCON_PASSWORD")
+
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
@@ -106,6 +114,11 @@ class BedrockRCON:
     
     def connect_and_send(self, command):
         try:
+            # Проверяем пароль
+            if not self.password:
+                logging.error("RCON пароль не установлен!")
+                return "ERROR: RCON password not set"
+            
             logging.info(f"Подключение к Bedrock RCON: {self.host}:{self.port}")
             
             # Создаем новое соединение для каждой команды
@@ -119,13 +132,13 @@ class BedrockRCON:
             # Для Bedrock сначала читаем приветствие (если есть)
             time.sleep(0.1)
             
-            # Отправляем пароль
+            # Отправляем пароль с нулевым байтом
             password_packet = self.password.encode('utf-8') + b'\x00'
             self.sock.send(password_packet)
             logging.info("Пароль отправлен")
             
             # Ждем ответа на пароль
-            time.sleep(0.1)
+            time.sleep(0.2)
             
             # Отправляем команду с нулевым байтом в конце
             command_packet = command.encode('utf-8') + b'\x00'
@@ -133,7 +146,7 @@ class BedrockRCON:
             logging.info(f"Команда отправлена: {command}")
             
             # Читаем ответ
-            self.sock.settimeout(5)
+            self.sock.settimeout(3)
             response = b""
             
             try:
@@ -157,7 +170,7 @@ class BedrockRCON:
             
             logging.info(f"Результат ({len(result)} символов): {result[:200]}")
             
-            return result if result else ""
+            return result if result else "Пустой ответ"
             
         except socket.timeout:
             logging.error("Таймаут при подключении")
@@ -179,20 +192,23 @@ class BedrockRCON:
 
 def run_rcon(command):
     try:
+        if not RCON_PASS:
+            return "ERROR: RCON password not configured"
+        
         rcon = BedrockRCON(RCON_IP, RCON_PORT, RCON_PASS)
         result = rcon.connect_and_send(command)
         
         if "ERROR_CONN" in result:
-            return "ERROR_CONN"
+            return "❌ Ошибка подключения к RCON серверу"
         elif "ERROR_TIMEOUT" in result:
-            return "ERROR_TIMEOUT"
+            return "⏱️ Таймаут подключения к серверу"
         elif "ERROR:" in result:
             return result
         
-        return result if result else ""
+        return result if result else "✅ Команда выполнена"
     except Exception as e:
         logging.error(f"RCON Error: {e}")
-        return f"ERROR: {str(e)}"
+        return f"❌ Ошибка: {str(e)}"
 
 # --- ОБРАБОТЧИКИ ---
 
@@ -206,22 +222,30 @@ async def test_rcon(m: types.Message):
     if m.from_user.id != ADMIN_ID:
         return
     
-    await m.answer("🔄 Тестирую RCON...")
+    await m.answer("🔄 Тестирую RCON подключение...")
+    
+    if not RCON_PASS:
+        await m.answer("❌ RCON_PASSWORD не установлен в переменных окружения!")
+        return
     
     # Тест 1: Простая команда
+    await m.answer("📡 Тест 1: Команда 'list'...")
     result1 = run_rcon("list")
-    await m.answer(f"Тест 1 (list): {result1}")
+    await m.answer(f"Результат: {result1[:500]}")
+    
+    await asyncio.sleep(1)
     
     # Тест 2: Say команда
+    await m.answer("📡 Тест 2: Команда 'say Тест'...")
     result2 = run_rcon("say Тест из Telegram")
-    await m.answer(f"Тест 2 (say): {result2}")
+    await m.answer(f"Результат: {result2[:500]}")
     
     # Показываем настройки
     await m.answer(
-        f"RCON настройки:\n"
+        f"🔧 RCON настройки:\n"
         f"IP: {RCON_IP}\n"
         f"Port: {RCON_PORT}\n"
-        f"Pass: {'установлен' if RCON_PASS else 'НЕ установлен'}"
+        f"Pass: {'✅ установлен' if RCON_PASS else '❌ НЕ установлен'}"
     )
 
 # Команда для проверки RCON (только админ)
@@ -232,6 +256,10 @@ async def check_rcon(m: types.Message):
     
     await m.answer("🔍 Проверяю RCON подключение...")
     
+    if not RCON_PASS:
+        await m.answer("❌ RCON_PASSWORD не установлен!")
+        return
+    
     # Простая тестовая команда
     test_commands = [
         "list",  # Список игроков
@@ -240,9 +268,16 @@ async def check_rcon(m: types.Message):
     ]
     
     for cmd in test_commands:
+        await m.answer(f"🔄 Выполняю: `{cmd}`...", parse_mode="Markdown")
         result = run_rcon(cmd)
-        status = "✅" if "ERROR" not in result else "❌"
-        await m.answer(f"{status} `{cmd}`:\n```\n{result[:500]}\n```", parse_mode="Markdown")
+        
+        # Определяем статус
+        if "ERROR" in result or "Ошибка" in result:
+            status = "❌"
+        else:
+            status = "✅"
+        
+        await m.answer(f"{status} `{cmd}`:\n```\n{result[:1000]}\n```", parse_mode="Markdown")
         await asyncio.sleep(1)
 
 # Заявки
@@ -366,6 +401,12 @@ async def bind_nick(m: types.Message, state: FSMContext):
 async def bind_pass(m: types.Message, state: FSMContext):
     data = await state.get_data()
     nick = data['nick']
+    
+    if not RCON_PASS:
+        await m.answer("❌ Система привязки временно недоступна (RCON не настроен)")
+        await state.clear()
+        return
+    
     res = run_rcon(f"checkpass {nick} {m.text}")
 
     if "AUTH_SUCCESS" in res:
@@ -392,6 +433,10 @@ async def bind_pass(m: types.Message, state: FSMContext):
 # Кнопки управления
 @dp.callback_query(F.data == "kick_me")
 async def kick_c(c: types.CallbackQuery):
+    if not RCON_PASS:
+        await c.answer("❌ Система временно недоступна", show_alert=True)
+        return
+    
     db = load_db()
     nick = db.get(str(c.from_user.id), {}).get("nick")
     if nick:
@@ -405,17 +450,28 @@ async def kick_c(c: types.CallbackQuery):
 
 @dp.callback_query(F.data == "change_pass")
 async def ch_pass_c(c: types.CallbackQuery, state: FSMContext):
+    if not RCON_PASS:
+        await c.answer("❌ Система временно недоступна", show_alert=True)
+        return
+    
     await c.message.answer("📝 Введите новый пароль:")
     await state.set_state(States.wait_new_pass)
     await c.answer()
 
 @dp.message(States.wait_new_pass)
 async def proc_new_p(m: types.Message, state: FSMContext):
+    if not RCON_PASS:
+        await m.answer("❌ Система временно недоступна")
+        await state.clear()
+        return
+    
     db = load_db()
     nick = db.get(str(m.from_user.id), {}).get("nick")
     if nick:
-        run_rcon(f"setpass {nick} {m.text}")
-        await m.answer(f"✅ Пароль для `{nick}` изменен!", parse_mode="Markdown")
+        result = run_rcon(f"setpass {nick} {m.text}")
+        await m.answer(f"✅ Пароль для `{nick}` изменен!\nРезультат: {result}", parse_mode="Markdown")
+    else:
+        await m.answer("❌ Аккаунт не привязан")
     await state.clear()
 
 @dp.callback_query(F.data == "unlink")
@@ -462,6 +518,10 @@ async def console_start(m: types.Message, state: FSMContext):
     if m.from_user.id != ADMIN_ID:
         return
     
+    if not RCON_PASS:
+        await m.answer("❌ RCON не настроен. Установите переменную окружения RCON_PASSWORD")
+        return
+    
     # Скрываем все кнопки - отправляем сообщение с кнопкой "Вернуться"
     await m.answer(
         "⚙️ Режим консоли\n"
@@ -488,16 +548,6 @@ async def console_command(m: types.Message, state: FSMContext):
     
     result = run_rcon(m.text)
     
-    # Форматируем ответ
-    if not result:
-        result = "✅ Команда выполнена (пустой ответ)"
-    elif "ERROR_CONN" in result:
-        result = "❌ Ошибка подключения к RCON"
-    elif "ERROR_TIMEOUT" in result:
-        result = "⏱️ Таймаут подключения"
-    elif "ERROR:" in result:
-        result = f"❌ Ошибка: {result}"
-    
     # Обрезаем слишком длинные ответы
     if len(result) > 4000:
         result = result[:4000] + "\n\n... (сообщение обрезано)"
@@ -514,6 +564,18 @@ async def handle(request):
     return web.Response(text="OK")
 
 async def main():
+    # Проверяем наличие токена
+    if not API_TOKEN:
+        print("❌ ОШИБКА: BOT_TOKEN не установлен!")
+        print("Установите переменную окружения BOT_TOKEN")
+        remove_lock()
+        sys.exit(1)
+    
+    print(f"✅ Бот запускается...")
+    print(f"🤖 ID администратора: {ADMIN_ID}")
+    print(f"🎮 RCON: {RCON_IP}:{RCON_PORT}")
+    print(f"🔑 RCON пароль: {'✅ установлен' if RCON_PASS else '❌ НЕ установлен'}")
+    
     # Удаляем webhook и сбрасываем все обновления
     try:
         await bot.delete_webhook(drop_pending_updates=True)
@@ -526,15 +588,7 @@ async def main():
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8080))).start()
     
-    logging.info("Бот начинает polling...")
-    await dp.start_polling(bot)
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Бот остановлен пользователем")
-    finally:
-        remove_lock()
+    port = int(os.getenv("PORT", 8080))
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    logging.info(f"Веб-сервер запущен на по
