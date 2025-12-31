@@ -1,4 +1,4 @@
-import asyncio, logging, time, os, json
+import asyncio, logging, time, os, json, sys
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -6,7 +6,30 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
-from mcrcon import MCRcon
+import socket
+import struct
+
+# Защита от двойного запуска
+LOCK_FILE = "bot.lock"
+
+def check_single_instance():
+    if os.path.exists(LOCK_FILE):
+        print("❌ ОШИБКА: Бот уже запущен!")
+        print("Если вы уверены что бот не запущен, удалите файл bot.lock")
+        sys.exit(1)
+    
+    # Создаем lock файл
+    with open(LOCK_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+    print("✅ Блокировка установлена")
+
+def remove_lock():
+    if os.path.exists(LOCK_FILE):
+        os.remove(LOCK_FILE)
+        print("✅ Блокировка снята")
+
+# Проверяем перед запуском
+check_single_instance()
 
 # --- КОНФИГ ---
 API_TOKEN = os.getenv('BOT_TOKEN')
@@ -71,19 +94,95 @@ def get_control_kb():
     builder.adjust(2)
     return builder.as_markup()
 
+# Самописный RCON клиент (более надежный)
+class SimpleRCON:
+    SERVERDATA_AUTH = 3
+    SERVERDATA_AUTH_RESPONSE = 2
+    SERVERDATA_EXECCOMMAND = 2
+    SERVERDATA_RESPONSE_VALUE = 0
+    
+    def __init__(self, host, port, password):
+        self.host = host
+        self.port = port
+        self.password = password
+        self.sock = None
+        self.req_id = 0
+    
+    def _pack(self, msg_type, msg_body):
+        self.req_id += 1
+        msg_body_encoded = msg_body.encode('utf-8')
+        msg_size = len(msg_body_encoded) + 10
+        return struct.pack('<iii', msg_size, self.req_id, msg_type) + msg_body_encoded + b'\x00\x00'
+    
+    def _unpack(self, data):
+        if len(data) < 12:
+            return None, None, None
+        msg_size, req_id, msg_type = struct.unpack('<iii', data[:12])
+        msg_body = data[12:-2].decode('utf-8', errors='ignore')
+        return msg_size, req_id, msg_body
+    
+    def connect(self):
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(10)
+            self.sock.connect((self.host, self.port))
+            
+            # Аутентификация
+            auth_packet = self._pack(self.SERVERDATA_AUTH, self.password)
+            self.sock.send(auth_packet)
+            
+            # Читаем ответ аутентификации
+            response = self.sock.recv(4096)
+            _, resp_id, _ = self._unpack(response)
+            
+            if resp_id == -1:
+                return False
+            return True
+        except Exception as e:
+            logging.error(f"RCON connect error: {e}")
+            return False
+    
+    def send_command(self, command):
+        try:
+            if not self.sock:
+                if not self.connect():
+                    return "ERROR_AUTH"
+            
+            cmd_packet = self._pack(self.SERVERDATA_EXECCOMMAND, command)
+            self.sock.send(cmd_packet)
+            
+            # Читаем ответ
+            response = self.sock.recv(4096)
+            _, _, msg_body = self._unpack(response)
+            
+            return msg_body if msg_body else ""
+        except Exception as e:
+            logging.error(f"RCON command error: {e}")
+            return f"ERROR: {str(e)}"
+        finally:
+            self.close()
+    
+    def close(self):
+        if self.sock:
+            try:
+                self.sock.close()
+            except:
+                pass
+            self.sock = None
+
 def run_rcon(command):
     try:
-        with MCRcon(RCON_IP, RCON_PASS, port=RCON_PORT, timeout=10) as mcr:
-            response = mcr.command(command)
-            if response is None:
-                return ""
-            return response.strip()
-    except ConnectionRefusedError:
-        logging.error("RCON: Connection refused")
-        return "ERROR_CONN"
-    except TimeoutError:
-        logging.error("RCON: Timeout")
-        return "ERROR_TIMEOUT"
+        rcon = SimpleRCON(RCON_IP, RCON_PORT, RCON_PASS)
+        result = rcon.send_command(command)
+        
+        if result == "ERROR_AUTH":
+            logging.error("RCON: Authentication failed")
+            return "ERROR_AUTH"
+        elif "ERROR:" in result:
+            logging.error(f"RCON: {result}")
+            return result
+        
+        return result if result else ""
     except Exception as e:
         logging.error(f"RCON Error: {e}")
         return f"ERROR: {str(e)}"
